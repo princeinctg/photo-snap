@@ -25,6 +25,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { ImageUploader } from "@/components/ui/ImageUploader";
 import { formatCurrency, formatDate } from "@/lib/utils";
 import { exportToCSV } from "@/lib/export-utils";
 import { useTheme } from "@/components/layout/ThemeProvider";
@@ -435,12 +436,18 @@ export default function ClientsPage() {
 
             <div className="space-y-1 sm:col-span-2">
               <label className="text-xs font-semibold text-muted-foreground">
-                Profile Avatar Image URL (Optional)
+                Profile Photo (Optional)
               </label>
-              <Input
-                placeholder="https://..."
-                value={formData.avatar}
-                onChange={(e) => setFormData({ ...formData, avatar: e.target.value })}
+              <ImageUploader
+                currentImageUrl={formData.avatar}
+                onUploadComplete={(url) => setFormData({ ...formData, avatar: url })}
+                onRemove={() => setFormData({ ...formData, avatar: "" })}
+                label="Upload Profile Photo"
+                folder="clients/avatars"
+                aspectRatio="aspect-square"
+                circular
+                compact
+                className="mb-1"
               />
             </div>
 

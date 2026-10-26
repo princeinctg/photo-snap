@@ -23,6 +23,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
+import { ImageUploader } from "@/components/ui/ImageUploader";
 import { useTheme } from "@/components/layout/ThemeProvider";
 import type { StudioSettings } from "@/types";
 
@@ -280,27 +281,28 @@ export default function SettingsPage() {
             </div>
 
             <div className="space-y-1.5 sm:col-span-2">
-              <label className="text-xs font-semibold text-muted-foreground">Studio Logo Image URL</label>
-              <div className="flex gap-3 items-center">
-                <Input
-                  value={settings.logoUrl || ""}
-                  onChange={(e) => setSettings({ ...settings, logoUrl: e.target.value })}
-                  placeholder="https://..."
-                />
-                {settings.logoUrl && (
-                  <div className="h-10 w-10 rounded border bg-card p-1 shrink-0 overflow-hidden">
-                    <img src={settings.logoUrl} alt="Logo" className="h-full w-full object-contain" />
-                  </div>
-                )}
-              </div>
+              <label className="text-xs font-semibold text-muted-foreground">Studio Logo Image</label>
+              <ImageUploader
+                currentImageUrl={settings.logoUrl}
+                onUploadComplete={(url) => setSettings({ ...settings, logoUrl: url })}
+                onRemove={() => setSettings({ ...settings, logoUrl: "" })}
+                label="Upload Studio Logo"
+                folder="settings/logos"
+                aspectRatio="aspect-video"
+                className="max-w-xs"
+              />
             </div>
 
             <div className="space-y-1.5 sm:col-span-2">
-              <label className="text-xs font-semibold text-muted-foreground">Authorized Signature Image URL</label>
-              <Input
-                value={settings.signatureUrl || ""}
-                onChange={(e) => setSettings({ ...settings, signatureUrl: e.target.value })}
-                placeholder="https://..."
+              <label className="text-xs font-semibold text-muted-foreground">Authorized Signature Image</label>
+              <ImageUploader
+                currentImageUrl={settings.signatureUrl}
+                onUploadComplete={(url) => setSettings({ ...settings, signatureUrl: url })}
+                onRemove={() => setSettings({ ...settings, signatureUrl: "" })}
+                label="Upload Signature"
+                folder="settings/signatures"
+                aspectRatio="aspect-[3/1]"
+                className="max-w-xs"
               />
             </div>
           </div>

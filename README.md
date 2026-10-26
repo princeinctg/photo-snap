@@ -87,7 +87,52 @@
 | **Data Visualization** | Recharts (Responsive SVG Bar, Area, Pie, and Line charts) |
 | **Database** | MongoDB Atlas with Mongoose ODM + Resilient fallback persistent JSON engine |
 | **Security & Auth** | bcryptjs password hashing, HTTP-only JWT cookies, tenant isolation |
+| **Image Storage** | Cloudinary (free tier, persistent) with local `/public/uploads/` fallback |
 | **Data Export** | PapaParse (CSV generation), Print-to-PDF engine |
+
+---
+
+## 📸 Image Upload System
+
+Photo Studio OS includes a complete, persistent image upload system. Images are uploaded directly from your device (drag & drop, click to browse, or mobile file picker) with no need to paste URLs manually.
+
+### Storage: Cloudinary (Recommended for Production)
+
+**Free Tier:** 25 GB storage · 25 GB bandwidth/month — sufficient for most studios.
+
+**Setup:**
+1. Sign up for free at [cloudinary.com](https://cloudinary.com/)
+2. In your Cloudinary dashboard, copy your **Cloud name**, **API Key**, and **API Secret**
+3. Add these to your `.env.local`:
+
+```env
+CLOUDINARY_CLOUD_NAME=your_cloud_name_here
+CLOUDINARY_API_KEY=your_api_key_here
+CLOUDINARY_API_SECRET=your_api_secret_here
+```
+
+When all three values are set, all uploads go directly to Cloudinary and return persistent HTTPS URLs that work after redeployment, server restarts, and across all devices.
+
+**Without Cloudinary (Local Dev):** Images are saved to `public/uploads/` on your local filesystem. This works for development but is not available on Vercel (read-only filesystem).
+
+### Upload Locations
+
+| Location | Where to Upload |
+|---|---|
+| Studio Logo | Settings → Studio Profile → Upload Studio Logo |
+| Authorized Signature | Settings → Studio Profile → Upload Signature |
+| Client Profile Photo | Clients → Add/Edit Client → Profile Photo |
+| Package Cover Image | Packages → Add/Edit Package → Cover Image |
+| Gallery Cover | Galleries → Add/Edit Gallery → Cover Image |
+| Gallery Photos | Galleries → card → **Manage Photos** (multi-upload, drag & drop) |
+
+### Security
+
+- File type is validated server-side using **magic bytes** (not just browser-provided MIME types)
+- Maximum file size: 10 MB per upload
+- Allowed formats: JPEG, PNG, WebP, GIF
+- Cloudinary API Secret is never exposed to the browser
+- All uploads require authentication
 
 ---
 

@@ -24,6 +24,8 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { ImageUploader } from "@/components/ui/ImageUploader";
+import { GalleryPhotoManager } from "@/components/ui/GalleryPhotoManager";
 import { formatDate } from "@/lib/utils";
 import type { Gallery, GalleryImage, Client, EventType } from "@/types";
 
@@ -33,6 +35,9 @@ export default function GalleriesPage() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  // Gallery Photo Manager
+  const [managingPhotosId, setManagingPhotosId] = useState<string | null>(null);
+
 
   // Modal State
   const [modalOpen, setModalOpen] = useState(false);
@@ -77,7 +82,7 @@ export default function GalleriesPage() {
       title: "",
       clientId: clients[0]?.id || "",
       description: "Exclusive curated preview gallery for clients.",
-      coverImage: "https://images.unsplash.com/photo-1519741497674-611481863552?w=800&auto=format&fit=crop&q=80",
+      coverImage: "",
       eventType: "wedding",
       shootDate: new Date().toISOString().split("T")[0],
       isPublic: true,
@@ -157,15 +162,18 @@ export default function GalleriesPage() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             ...payload,
-            images: [
-              {
-                id: `img_${Date.now()}_1`,
-                url: formData.coverImage,
-                caption: "Highlight Master Edit",
-                isFavorite: true,
-                order: 1,
-              },
-            ],
+            images: formData.coverImage
+              ? [
+                  {
+                    id: `img_${Date.now()}_1`,
+                    url: formData.coverImage,
+                    caption: "Cover Photo",
+                    isFavorite: true,
+                    order: 1,
+                    createdAt: new Date().toISOString(),
+                  },
+                ]
+              : [],
           }),
         });
         if (res.ok) {
@@ -399,11 +407,14 @@ export default function GalleriesPage() {
             </div>
 
             <div className="space-y-1 sm:col-span-2">
-              <label className="text-xs font-semibold text-muted-foreground">Cover Image URL</label>
-              <Input
-                placeholder="https://..."
-                value={formData.coverImage}
-                onChange={(e) => setFormData({ ...formData, coverImage: e.target.value })}
+              <label className="text-xs font-semibold text-muted-foreground">Cover Image</label>
+              <ImageUploader
+                currentImageUrl={formData.coverImage}
+                onUploadComplete={(url) => setFormData({ ...formData, coverImage: url })}
+                onRemove={() => setFormData({ ...formData, coverImage: "" })}
+                label="Upload Cover Image"
+                folder="galleries/covers"
+                aspectRatio="aspect-video"
               />
             </div>
 

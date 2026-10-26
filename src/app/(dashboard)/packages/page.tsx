@@ -21,6 +21,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { ImageUploader } from "@/components/ui/ImageUploader";
 import { formatCurrency } from "@/lib/utils";
 import { useTheme } from "@/components/layout/ThemeProvider";
 import type { PhotographyPackage } from "@/types";
@@ -421,11 +422,14 @@ export default function PackagesPage() {
             </div>
 
             <div className="space-y-1 sm:col-span-2">
-              <label className="text-xs font-semibold text-muted-foreground">Cover Image URL</label>
-              <Input
-                placeholder="https://..."
-                value={formData.coverImage}
-                onChange={(e) => setFormData({ ...formData, coverImage: e.target.value })}
+              <label className="text-xs font-semibold text-muted-foreground">Cover Image</label>
+              <ImageUploader
+                currentImageUrl={formData.coverImage}
+                onUploadComplete={(url) => setFormData({ ...formData, coverImage: url })}
+                onRemove={() => setFormData({ ...formData, coverImage: "" })}
+                label="Upload Cover Image"
+                folder="packages/covers"
+                aspectRatio="aspect-video"
               />
             </div>
 

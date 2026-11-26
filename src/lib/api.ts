@@ -3,6 +3,7 @@ import { ZodError, type ZodType } from "zod";
 import { ActivityLogModel } from "./models";
 import { getSessionFromRequest, clientIp, type AuthContext } from "./session";
 import { can, type Permission } from "./permissions";
+import { connectDB } from "./mongodb";
 
 export class ApiError extends Error {
   status: number;
@@ -56,6 +57,15 @@ export function handleError(error: unknown) {
  * Throws ApiError so route handlers can pass it to handleError().
  */
 export async function requireAuth(req: Request, permission?: Permission): Promise<AuthContext> {
+  try {
+    await connectDB();
+  } catch {
+    const message = process.env.MONGODB_URI
+      ? "Unable to connect to MongoDB. Check the server-side URI and Atlas network access."
+      : "MongoDB is not available. Configure MONGODB_URI in your environment before using authentication.";
+    throw new ApiError(503, message, "DATABASE_UNAVAILABLE");
+  }
+
   const auth = await getSessionFromRequest(req);
   if (!auth) {
     throw new ApiError(401, "Authentication required. Please sign in.", "UNAUTHENTICATED");

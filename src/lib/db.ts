@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import mongoose from "mongoose";
+import { connectDB } from "./mongodb";
 import {
   demoClients,
   demoBookings,
@@ -57,38 +58,14 @@ export interface LocalStore {
   studioSettingsMap?: Record<string, StudioSettings>;
 }
 
-// ---------------------------------------------------------------------------
-// Cached MongoDB Connection
-// ---------------------------------------------------------------------------
-declare global {
-  var mongooseCache: { conn: typeof mongoose | null; promise: Promise<typeof mongoose> | null } | undefined;
-}
-
-const cache = global.mongooseCache || (global.mongooseCache = { conn: null, promise: null });
-
 export async function connectMongo(): Promise<boolean> {
-  const uri = process.env.MONGODB_URI;
-  if (!uri) return false;
-
-  if (cache.conn && mongoose.connection.readyState >= 1) {
-    return true;
-  }
-
-  if (!cache.promise) {
-    const opts = {
-      bufferCommands: false,
-      serverSelectionTimeoutMS: 5000,
-    };
-    cache.promise = mongoose.connect(uri, opts).then((m) => m);
-  }
+  if (!process.env.MONGODB_URI) return false;
 
   try {
-    cache.conn = await cache.promise;
+    await connectDB();
     return true;
-  } catch (e) {
-    cache.promise = null;
-    cache.conn = null;
-    console.warn("MongoDB connection failed, falling back to local store:", e);
+  } catch {
+    console.warn("MongoDB connection failed; using the local store for non-authentication data.");
     return false;
   }
 }

@@ -155,19 +155,21 @@ Copy `.env.example` to `.env.local`:
 cp .env.example .env.local
 ```
 
+Next.js uses `.env.local` ahead of `.env` for local development; when `.env.local` is absent, it loads `.env`. Keep `MONGODB_URI` server-only.
+
 Example configuration (`.env.local`):
 ```env
 NEXT_PUBLIC_APP_URL=http://localhost:3000
 AUTH_SECRET=super_secret_jwt_key_min_32_characters_random_string
-MONGODB_URI=mongodb://localhost:27017/photo_studio_os
+MONGODB_URI=mongodb+srv://USERNAME:PASSWORD@CLUSTER.mongodb.net/photo_studio_os?retryWrites=true&w=majority
 NEXT_PUBLIC_DEFAULT_CURRENCY=BDT
 NEXT_PUBLIC_DEFAULT_CURRENCY_SYMBOL=৳
 INITIAL_ADMIN_EMAIL=owner@photostudio.com
 INITIAL_ADMIN_PASSWORD=StudioAdmin123!
 ```
 
-> **Note on Zero-Config Local Storage:**
-> If you do not have a local MongoDB instance running, the system will automatically utilize its built-in persistent local JSON storage engine (`.data/studio-store.json`). It works immediately out of the box without any database setup!
+`MONGODB_URI` is read only by server-side code. Authentication requires a reachable MongoDB instance; the local JSON fallback applies only to non-authentication application data.
+For local MongoDB, use `mongodb://localhost:27017/photo_studio_os` instead.
 
 ### 4. Start Development Server
 ```bash
@@ -229,6 +231,8 @@ In the Vercel project configuration panel, add the following Environment Variabl
 | `NEXT_PUBLIC_DEFAULT_CURRENCY_SYMBOL` | Default currency symbol | `৳` |
 | `INITIAL_ADMIN_EMAIL` | Production admin email | `admin@yourstudio.com` |
 | `INITIAL_ADMIN_PASSWORD` | Production admin password | `SecureStudioPassword2026!` |
+
+Keep `MONGODB_URI` server-only (never prefix it with `NEXT_PUBLIC_`). In MongoDB Atlas, configure Network Access to allow connections from your deployment environment and ensure the database user has access to `photo_studio_os`.
 
 ### Step 4: Deploy
 Click **Deploy**. Vercel will compile the Next.js App Router project and publish the production deployment.

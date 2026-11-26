@@ -10,7 +10,7 @@ import {
   StudioSettingsModel,
   UserModel,
 } from "./models";
-import { connectMongo } from "./db";
+import { connectDB } from "./mongodb";
 import {
   createSession,
   getSessionFromRequest,
@@ -86,13 +86,13 @@ export const defaultAdminUser: User = {
 };
 
 async function requireDatabase(): Promise<void> {
-  const connected = await connectMongo();
-  if (!connected) {
-    throw new ApiError(
-      503,
-      "MongoDB is not available. Configure MONGODB_URI in your environment before using authentication.",
-      "DATABASE_UNAVAILABLE"
-    );
+  try {
+    await connectDB();
+  } catch {
+    const message = process.env.MONGODB_URI
+      ? "Unable to connect to MongoDB. Check the server-side URI and Atlas network access."
+      : "MongoDB is not available. Configure MONGODB_URI in your environment before using authentication.";
+    throw new ApiError(503, message, "DATABASE_UNAVAILABLE");
   }
 }
 
@@ -289,8 +289,7 @@ async function issueEmailVerification(user: any): Promise<string> {
  * hardcoding credentials in source.
  */
 export async function ensureBootstrapAdmin(): Promise<{ created: boolean; email?: string }> {
-  const connected = await connectMongo();
-  if (!connected) return { created: false };
+  await requireDatabase();
 
   const count = await UserModel.estimatedDocumentCount();
   if (count > 0) return { created: false };
@@ -435,6 +434,7 @@ export async function loginUser(params: {
 
 export async function logoutUser(req?: Request): Promise<void> {
   try {
+    await requireDatabase();
     const session = await getSessionFromRequest(req);
     if (session) {
       await revokeSession(session.sessionId, session.userId);
@@ -447,8 +447,6 @@ export async function logoutUser(req?: Request): Promise<void> {
         entityId: session.userId,
       });
     }
-  } catch {
-    // Never block logout if the database is temporarily unavailable.
   } finally {
     removeSessionCookie();
   }
@@ -622,6 +620,7 @@ export async function changePassword(params: {
 }
 
 export async function getCurrentSessionCount(userId: string): Promise<number> {
+  await requireDatabase();
   return SessionModel.countDocuments({
     userId,
     revokedAt: null,

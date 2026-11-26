@@ -23,6 +23,9 @@ import {
   PackageModel,
   GalleryModel,
   StudioSettingsModel,
+  EmployeeModel,
+  ProjectModel,
+  UserModel,
 } from "./models";
 import type {
   Client,
@@ -40,7 +43,7 @@ import { roundToTwoDecimals } from "./utils";
 const DATA_DIR = path.join(process.cwd(), ".data");
 const STORE_FILE = path.join(DATA_DIR, "studio-store.json");
 
-interface LocalStore {
+export interface LocalStore {
   clients: Client[];
   bookings: Booking[];
   invoices: Invoice[];
@@ -50,81 +53,82 @@ interface LocalStore {
   packages: PhotographyPackage[];
   galleries: Gallery[];
   settings: StudioSettings;
+  users?: any[];
+  studioSettingsMap?: Record<string, StudioSettings>;
 }
 
-let isMongooseConnected = false;
-
-// Check if MongoDB URI is configured
-const MONGODB_URI = process.env.MONGODB_URI;
-
-export async function connectMongo() {
-  if (isMongooseConnected) return true;
-  if (!MONGODB_URI || MONGODB_URI.includes("localhost:27017")) {
-    // If it's default localhost or empty, try quick check or use local store
-    try {
-      if (mongoose.connection.readyState >= 1) {
-        isMongooseConnected = true;
-        return true;
-      }
-      if (MONGODB_URI) {
-        await mongoose.connect(MONGODB_URI, {
-          serverSelectionTimeoutMS: 2000,
-        });
-        isMongooseConnected = true;
-        return true;
-      }
-    } catch {
-      isMongooseConnected = false;
-      return false;
-    }
-  } else {
-    // Atlas or remote production connection
-    try {
-      if (mongoose.connection.readyState >= 1) {
-        isMongooseConnected = true;
-        return true;
-      }
-      await mongoose.connect(MONGODB_URI, {
-        serverSelectionTimeoutMS: 5000,
-      });
-      isMongooseConnected = true;
-      return true;
-    } catch (err) {
-      console.warn("MongoDB connection failed, falling back to persistent JSON store:", err);
-      isMongooseConnected = false;
-      return false;
-    }
-  }
-  return false;
+// ---------------------------------------------------------------------------
+// Cached MongoDB Connection
+// ---------------------------------------------------------------------------
+declare global {
+  var mongooseCache: { conn: typeof mongoose | null; promise: Promise<typeof mongoose> | null } | undefined;
 }
 
-function ensureDataDir() {
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
+const cache = global.mongooseCache || (global.mongooseCache = { conn: null, promise: null });
+
+export async function connectMongo(): Promise<boolean> {
+  const uri = process.env.MONGODB_URI;
+  if (!uri) return false;
+
+  if (cache.conn && mongoose.connection.readyState >= 1) {
+    return true;
   }
-  if (!fs.existsSync(STORE_FILE)) {
-    const initialData: LocalStore = {
-      clients: demoClients,
-      bookings: demoBookings,
-      invoices: demoInvoices,
-      payments: demoPayments,
-      incomes: demoIncomes,
-      expenses: demoExpenses,
-      packages: demoPackages,
-      galleries: demoGalleries,
-      settings: initialSettings,
+
+  if (!cache.promise) {
+    const opts = {
+      bufferCommands: false,
+      serverSelectionTimeoutMS: 5000,
     };
-    fs.writeFileSync(STORE_FILE, JSON.stringify(initialData, null, 2), "utf-8");
+    cache.promise = mongoose.connect(uri, opts).then((m) => m);
+  }
+
+  try {
+    cache.conn = await cache.promise;
+    return true;
+  } catch (e) {
+    cache.promise = null;
+    cache.conn = null;
+    console.warn("MongoDB connection failed, falling back to local store:", e);
+    return false;
   }
 }
 
-function readLocalStore(): LocalStore {
+// ---------------------------------------------------------------------------
+// Local Store Helpers
+// ---------------------------------------------------------------------------
+function ensureDataDir() {
+  try {
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+    if (!fs.existsSync(STORE_FILE)) {
+      const initialData: LocalStore = {
+        clients: demoClients,
+        bookings: demoBookings,
+        invoices: demoInvoices,
+        payments: demoPayments,
+        incomes: demoIncomes,
+        expenses: demoExpenses,
+        packages: demoPackages,
+        galleries: demoGalleries,
+        settings: initialSettings,
+        users: [],
+        studioSettingsMap: {
+          [DEFAULT_STUDIO_ID]: initialSettings,
+        },
+      };
+      fs.writeFileSync(STORE_FILE, JSON.stringify(initialData, null, 2), "utf-8");
+    }
+  } catch {}
+}
+
+export function readLocalStore(): LocalStore {
   ensureDataDir();
   try {
     const raw = fs.readFileSync(STORE_FILE, "utf-8");
     return JSON.parse(raw);
   } catch {
-    const fallback: LocalStore = {
+    return {
       clients: demoClients,
       bookings: demoBookings,
       invoices: demoInvoices,
@@ -134,14 +138,38 @@ function readLocalStore(): LocalStore {
       packages: demoPackages,
       galleries: demoGalleries,
       settings: initialSettings,
+      users: [],
+      studioSettingsMap: {
+        [DEFAULT_STUDIO_ID]: initialSettings,
+      },
     };
-    return fallback;
   }
 }
 
-function writeLocalStore(data: LocalStore) {
-  ensureDataDir();
-  fs.writeFileSync(STORE_FILE, JSON.stringify(data, null, 2), "utf-8");
+export function writeLocalStore(data: LocalStore) {
+  try {
+    ensureDataDir();
+    fs.writeFileSync(STORE_FILE, JSON.stringify(data, null, 2), "utf-8");
+  } catch {}
+}
+
+// ---------------------------------------------------------------------------
+// ObjectId reference helpers (string ids are kept for UI compatibility)
+// ---------------------------------------------------------------------------
+async function resolveRef(Model: any, studioId: string, id?: string | null) {
+  if (!id) return null;
+  try {
+    const doc = await Model.findOne({ id, studioId }).select("_id").lean();
+    return doc?._id ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function resolveRefs(Model: any, studioId: string, ids?: string[] | null) {
+  if (!ids || ids.length === 0) return [];
+  const docs = await Promise.all(ids.map((id) => resolveRef(Model, studioId, id)));
+  return docs.filter(Boolean);
 }
 
 // ==========================================
@@ -152,101 +180,94 @@ export async function getClients(studioId: string = DEFAULT_STUDIO_ID): Promise<
   const connected = await connectMongo();
   if (connected) {
     try {
-      const docs = await ClientModel.find({ studioId }).sort({ createdAt: -1 }).lean();
-      if (docs && docs.length > 0) {
-        return docs.map((d: any) => ({ ...d, id: d._id.toString() }));
-      }
+      const docs = await ClientModel.find({ studioId, isArchived: { $ne: true } })
+        .sort({ createdAt: -1 })
+        .lean();
+      return docs.map((d: any) => ({
+        ...d,
+        id: d.id || d._id.toString(),
+      }));
     } catch (e) {
       console.warn("Mongoose getClients fallback", e);
     }
   }
+
   const store = readLocalStore();
-  return store.clients.filter((c) => c.studioId === studioId);
+  return store.clients.filter((c) => c.studioId === studioId && !c.isArchived);
 }
 
 export async function saveClient(client: Partial<Client> & { name: string; phone: string; studioId?: string }): Promise<Client> {
   const studioId = client.studioId || DEFAULT_STUDIO_ID;
+  const clientId = client.id || `cli_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+
   const store = readLocalStore();
+  const existing = store.clients.find((c) => c.id === clientId);
 
-  let target: Client;
-  if (client.id) {
-    const idx = store.clients.findIndex((c) => c.id === client.id);
-    if (idx !== -1) {
-      target = {
-        ...store.clients[idx],
-        ...client,
-        updatedAt: new Date().toISOString(),
-      };
-      store.clients[idx] = target;
-    } else {
-      target = {
-        id: client.id,
-        studioId,
-        name: client.name,
-        email: client.email || "",
-        phone: client.phone,
-        address: client.address || "",
-        avatar: client.avatar || "",
-        notes: client.notes || "",
-        isArchived: false,
-        totalBilled: client.totalBilled || 0,
-        totalPaid: client.totalPaid || 0,
-        balance: client.balance || 0,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
-      store.clients.unshift(target);
-    }
-  } else {
-    target = {
-      id: `cli_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-      studioId,
-      name: client.name,
-      email: client.email || "",
-      phone: client.phone,
-      address: client.address || "",
-      avatar: client.avatar || "",
-      notes: client.notes || "",
-      isArchived: false,
-      totalBilled: 0,
-      totalPaid: 0,
-      balance: 0,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-    store.clients.unshift(target);
-  }
+  const target: Client = {
+    id: clientId,
+    studioId,
+    clientCode: client.clientCode || existing?.clientCode || `CL-${String(store.clients.length + 1).padStart(4, "0")}`,
+    name: client.name,
+    email: client.email || existing?.email || "",
+    phone: client.phone,
+    address: client.address ?? existing?.address ?? "",
+    avatar: client.avatar ?? existing?.avatar ?? "",
+    dateOfBirth: client.dateOfBirth ?? existing?.dateOfBirth ?? "",
+    gender: client.gender ?? existing?.gender ?? "",
+    notes: client.notes ?? existing?.notes ?? "",
+    status: client.status ?? existing?.status ?? "active",
+    userId: client.userId ?? existing?.userId ?? "",
+    isArchived: client.isArchived ?? existing?.isArchived ?? false,
+    totalBilled: client.totalBilled ?? existing?.totalBilled ?? 0,
+    totalPaid: client.totalPaid ?? existing?.totalPaid ?? 0,
+    totalSpending: client.totalSpending ?? existing?.totalSpending ?? 0,
+    balance: client.balance ?? existing?.balance ?? 0,
+    createdAt: existing?.createdAt || client.createdAt || new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
 
-  writeLocalStore(store);
-
+  // Sync to MongoDB
   const connected = await connectMongo();
   if (connected) {
     try {
-      if (client.id) {
-        await ClientModel.findByIdAndUpdate(client.id, target, { upsert: true });
-      } else {
-        await ClientModel.create(target);
-      }
+      const userRef = await resolveRef(UserModel, studioId, target.userId);
+      await ClientModel.findOneAndUpdate(
+        { id: target.id, studioId },
+        { $set: { ...target, user: userRef } },
+        { upsert: true, new: true }
+      );
     } catch (e) {
       console.warn("Mongo saveClient error", e);
     }
   }
 
+  // Sync to local store
+  const idx = store.clients.findIndex((c) => c.id === clientId);
+  if (idx !== -1) {
+    store.clients[idx] = target;
+  } else {
+    store.clients.unshift(target);
+  }
+  writeLocalStore(store);
+
   return target;
 }
 
 export async function deleteClient(id: string, studioId: string = DEFAULT_STUDIO_ID): Promise<boolean> {
+  const connected = await connectMongo();
+  if (connected) {
+    try {
+      await ClientModel.findOneAndDelete({ id, studioId });
+    } catch (e) {
+      console.warn("Mongo deleteClient error", e);
+    }
+  }
+
   const store = readLocalStore();
   const initialLen = store.clients.length;
   store.clients = store.clients.filter((c) => c.id !== id);
   writeLocalStore(store);
 
-  const connected = await connectMongo();
-  if (connected) {
-    try {
-      await ClientModel.findOneAndDelete({ _id: id, studioId });
-    } catch {}
-  }
   return store.clients.length < initialLen;
 }
 
@@ -258,72 +279,79 @@ export async function getPackages(studioId: string = DEFAULT_STUDIO_ID): Promise
   const connected = await connectMongo();
   if (connected) {
     try {
-      const docs = await PackageModel.find({ studioId }).sort({ price: 1 }).lean();
-      if (docs && docs.length > 0) {
-        return docs.map((d: any) => ({ ...d, id: d._id.toString() }));
-      }
-    } catch {}
+      const docs = await PackageModel.find({ studioId, isActive: { $ne: false } })
+        .sort({ price: 1 })
+        .lean();
+      return docs.map((d: any) => ({
+        ...d,
+        id: d.id || d._id.toString(),
+      }));
+    } catch (e) {
+      console.warn("Mongoose getPackages fallback", e);
+    }
   }
+
   const store = readLocalStore();
-  return store.packages.filter((p) => p.studioId === studioId);
+  return store.packages.filter((p) => p.studioId === studioId && p.isActive !== false);
 }
 
-export async function savePackage(pkg: Partial<PhotographyPackage> & { name: string; price: number }): Promise<PhotographyPackage> {
+export async function savePackage(pkg: Partial<PhotographyPackage> & { name: string; price: number; studioId?: string }): Promise<PhotographyPackage> {
   const studioId = pkg.studioId || DEFAULT_STUDIO_ID;
-  const store = readLocalStore();
+  const pkgId = pkg.id || `pkg_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
 
-  let target: PhotographyPackage;
-  if (pkg.id) {
-    const idx = store.packages.findIndex((p) => p.id === pkg.id);
-    if (idx !== -1) {
-      target = { ...store.packages[idx], ...pkg, updatedAt: new Date().toISOString() };
-      store.packages[idx] = target;
-    } else {
-      target = {
-        id: pkg.id,
-        studioId,
-        name: pkg.name,
-        description: pkg.description || "",
-        price: Number(pkg.price) || 0,
-        coverImage: pkg.coverImage || "",
-        includedServices: pkg.includedServices || [],
-        photographyHours: Number(pkg.photographyHours) || 6,
-        editedPhotosCount: Number(pkg.editedPhotosCount) || 100,
-        albumOptions: pkg.albumOptions || "",
-        deliveryTimeline: pkg.deliveryTimeline || "21 Days",
-        addOns: pkg.addOns || [],
-        isActive: pkg.isActive ?? true,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
-      store.packages.push(target);
+  const store = readLocalStore();
+  const existing = store.packages.find((p) => p.id === pkgId);
+
+  const target: PhotographyPackage = {
+    id: pkgId,
+    studioId,
+    name: pkg.name,
+    description: pkg.description ?? existing?.description ?? "",
+    price: Number(pkg.price) || 0,
+    coverImage: pkg.coverImage ?? existing?.coverImage ?? "",
+    includedServices: pkg.includedServices || existing?.includedServices || [],
+    photographyHours: Number(pkg.photographyHours) || existing?.photographyHours || 6,
+    editedPhotosCount: Number(pkg.editedPhotosCount) || existing?.editedPhotosCount || 100,
+    albumOptions: pkg.albumOptions ?? existing?.albumOptions ?? "",
+    deliveryTimeline: pkg.deliveryTimeline ?? existing?.deliveryTimeline ?? "21 Days",
+    addOns: pkg.addOns || existing?.addOns || [],
+    isActive: pkg.isActive ?? existing?.isActive ?? true,
+    createdAt: existing?.createdAt || pkg.createdAt || new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  const connected = await connectMongo();
+  if (connected) {
+    try {
+      await PackageModel.findOneAndUpdate(
+        { id: target.id, studioId },
+        { $set: target },
+        { upsert: true, new: true }
+      );
+    } catch (e) {
+      console.warn("Mongo savePackage error", e);
     }
-  } else {
-    target = {
-      id: `pkg_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-      studioId,
-      name: pkg.name,
-      description: pkg.description || "",
-      price: Number(pkg.price) || 0,
-      coverImage: pkg.coverImage || "",
-      includedServices: pkg.includedServices || [],
-      photographyHours: Number(pkg.photographyHours) || 6,
-      editedPhotosCount: Number(pkg.editedPhotosCount) || 100,
-      albumOptions: pkg.albumOptions || "",
-      deliveryTimeline: pkg.deliveryTimeline || "21 Days",
-      addOns: pkg.addOns || [],
-      isActive: pkg.isActive ?? true,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-    store.packages.push(target);
   }
 
+  const idx = store.packages.findIndex((p) => p.id === pkgId);
+  if (idx !== -1) {
+    store.packages[idx] = target;
+  } else {
+    store.packages.push(target);
+  }
   writeLocalStore(store);
+
   return target;
 }
 
-export async function deletePackage(id: string): Promise<boolean> {
+export async function deletePackage(id: string, studioId: string = DEFAULT_STUDIO_ID): Promise<boolean> {
+  const connected = await connectMongo();
+  if (connected) {
+    try {
+      await PackageModel.findOneAndDelete({ id, studioId });
+    } catch {}
+  }
+
   const store = readLocalStore();
   store.packages = store.packages.filter((p) => p.id !== id);
   writeLocalStore(store);
@@ -339,108 +367,107 @@ export async function getBookings(studioId: string = DEFAULT_STUDIO_ID): Promise
   if (connected) {
     try {
       const docs = await BookingModel.find({ studioId }).sort({ shootDate: 1 }).lean();
-      if (docs && docs.length > 0) {
-        return docs.map((d: any) => ({ ...d, id: d._id.toString() }));
-      }
-    } catch {}
+      return docs.map((d: any) => ({
+        ...d,
+        id: d.id || d._id.toString(),
+      }));
+    } catch (e) {
+      console.warn("Mongoose getBookings fallback", e);
+    }
   }
+
   const store = readLocalStore();
   return store.bookings.filter((b) => b.studioId === studioId);
 }
 
-export async function saveBooking(booking: Partial<Booking> & { title: string; shootDate: string; clientId: string }): Promise<Booking> {
+export async function saveBooking(booking: Partial<Booking> & { title: string; shootDate: string; clientId: string; studioId?: string }): Promise<Booking> {
   const studioId = booking.studioId || DEFAULT_STUDIO_ID;
+  const bookingId = booking.id || `bkg_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+
   const store = readLocalStore();
-
+  const existing = store.bookings.find((b) => b.id === bookingId);
   const client = store.clients.find((c) => c.id === booking.clientId);
-  const clientName = booking.clientName || client?.name || "Client";
-  const clientPhone = booking.clientPhone || client?.phone || "";
-  const clientEmail = booking.clientEmail || client?.email || "";
 
-  const totalPrice = Number(booking.totalPrice) || 0;
-  const advancePayment = Number(booking.advancePayment) || 0;
+  const clientName = booking.clientName || existing?.clientName || client?.name || "Client";
+  const clientPhone = booking.clientPhone || existing?.clientPhone || client?.phone || "";
+  const clientEmail = booking.clientEmail || existing?.clientEmail || client?.email || "";
+
+  const totalPrice = Number(booking.totalPrice ?? existing?.totalPrice ?? 0);
+  const advancePayment = Number(booking.advancePayment ?? existing?.advancePayment ?? 0);
   const remainingBalance = Math.max(0, totalPrice - advancePayment);
 
-  let target: Booking;
-  if (booking.id) {
-    const idx = store.bookings.findIndex((b) => b.id === booking.id);
-    if (idx !== -1) {
-      target = {
-        ...store.bookings[idx],
-        ...booking,
-        clientName,
-        clientPhone,
-        clientEmail,
-        totalPrice,
-        advancePayment,
-        remainingBalance,
-        updatedAt: new Date().toISOString(),
-      };
-      store.bookings[idx] = target;
-    } else {
-      target = {
-        id: booking.id,
-        studioId,
-        clientId: booking.clientId,
-        clientName,
-        clientPhone,
-        clientEmail,
-        packageId: booking.packageId || "",
-        packageName: booking.packageName || "",
-        title: booking.title,
-        eventType: booking.eventType || "wedding",
-        shootDate: booking.shootDate,
-        startTime: booking.startTime || "10:00",
-        endTime: booking.endTime || "16:00",
-        venue: booking.venue || "Studio",
-        locationAddress: booking.locationAddress || "",
-        assignedPhotographer: booking.assignedPhotographer || "",
-        notes: booking.notes || "",
-        totalPrice,
-        advancePayment,
-        remainingBalance,
-        status: booking.status || "confirmed",
-        invoiceId: booking.invoiceId || "",
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
-      store.bookings.unshift(target);
+  const target: Booking = {
+    id: bookingId,
+    studioId,
+    clientId: booking.clientId,
+    clientName,
+    clientPhone,
+    clientEmail,
+    packageId: booking.packageId ?? existing?.packageId ?? "",
+    packageName: booking.packageName ?? existing?.packageName ?? "",
+    title: booking.title,
+    eventType: booking.eventType || existing?.eventType || "wedding",
+    shootDate: booking.shootDate,
+    startTime: booking.startTime || existing?.startTime || "10:00",
+    endTime: booking.endTime ?? existing?.endTime ?? "16:00",
+    venue: booking.venue || existing?.venue || "Studio",
+    locationAddress: booking.locationAddress ?? existing?.locationAddress ?? "",
+    assignedPhotographer: booking.assignedPhotographer ?? existing?.assignedPhotographer ?? "",
+    assignedEmployees: booking.assignedEmployees ?? existing?.assignedEmployees ?? [],
+    projectId: booking.projectId ?? existing?.projectId ?? "",
+    notes: booking.notes ?? existing?.notes ?? "",
+    totalPrice,
+    advancePayment,
+    remainingBalance,
+    status: booking.status || existing?.status || "confirmed",
+    invoiceId: booking.invoiceId ?? existing?.invoiceId ?? "",
+    createdAt: existing?.createdAt || booking.createdAt || new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  const connected = await connectMongo();
+  if (connected) {
+    try {
+      const [clientRef, projectRef, employeeRefs] = await Promise.all([
+        resolveRef(ClientModel, studioId, target.clientId),
+        resolveRef(ProjectModel, studioId, target.projectId),
+        resolveRefs(EmployeeModel, studioId, target.assignedEmployees),
+      ]);
+      const savedBooking = await BookingModel.findOneAndUpdate(
+        { id: target.id, studioId },
+        { $set: { ...target, client: clientRef, project: projectRef, assignedEmployees: employeeRefs } },
+        { upsert: true, new: true }
+      );
+      if (clientRef) {
+        await ClientModel.updateOne(
+          { id: target.clientId, studioId },
+          { $addToSet: { bookingHistory: savedBooking._id } }
+        );
+      }
+    } catch (e) {
+      console.warn("Mongo saveBooking error", e);
     }
-  } else {
-    target = {
-      id: `book_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-      studioId,
-      clientId: booking.clientId,
-      clientName,
-      clientPhone,
-      clientEmail,
-      packageId: booking.packageId || "",
-      packageName: booking.packageName || "",
-      title: booking.title,
-      eventType: booking.eventType || "wedding",
-      shootDate: booking.shootDate,
-      startTime: booking.startTime || "10:00",
-      endTime: booking.endTime || "16:00",
-      venue: booking.venue || "Studio",
-      locationAddress: booking.locationAddress || "",
-      assignedPhotographer: booking.assignedPhotographer || "",
-      notes: booking.notes || "",
-      totalPrice,
-      advancePayment,
-      remainingBalance,
-      status: booking.status || "confirmed",
-      invoiceId: booking.invoiceId || "",
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-    store.bookings.unshift(target);
   }
 
+  const idx = store.bookings.findIndex((b) => b.id === bookingId);
+  if (idx !== -1) {
+    store.bookings[idx] = target;
+  } else {
+    store.bookings.unshift(target);
+  }
   writeLocalStore(store);
+
   return target;
 }
 
-export async function deleteBooking(id: string): Promise<boolean> {
+export async function deleteBooking(id: string, studioId: string = DEFAULT_STUDIO_ID): Promise<boolean> {
+  const connected = await connectMongo();
+  if (connected) {
+    try {
+      await BookingModel.findOneAndDelete({ id, studioId });
+    } catch {}
+  }
+
   const store = readLocalStore();
   store.bookings = store.bookings.filter((b) => b.id !== id);
   writeLocalStore(store);
@@ -448,7 +475,7 @@ export async function deleteBooking(id: string): Promise<boolean> {
 }
 
 // ==========================================
-// INVOICES & PAYMENTS CRUD
+// INVOICES CRUD
 // ==========================================
 
 export async function getInvoices(studioId: string = DEFAULT_STUDIO_ID): Promise<Invoice[]> {
@@ -456,32 +483,52 @@ export async function getInvoices(studioId: string = DEFAULT_STUDIO_ID): Promise
   if (connected) {
     try {
       const docs = await InvoiceModel.find({ studioId }).sort({ issueDate: -1 }).lean();
-      if (docs && docs.length > 0) {
-        return docs.map((d: any) => ({ ...d, id: d._id.toString() }));
-      }
-    } catch {}
+      return docs.map((d: any) => ({
+        ...d,
+        id: d.id || d._id.toString(),
+      }));
+    } catch (e) {
+      console.warn("Mongoose getInvoices fallback", e);
+    }
   }
+
   const store = readLocalStore();
-  return store.invoices.filter((inv) => inv.studioId === studioId);
+  return store.invoices.filter((i) => i.studioId === studioId);
 }
 
 export async function getInvoiceById(id: string, studioId?: string): Promise<Invoice | null> {
-  const invoices = await getInvoices(studioId || DEFAULT_STUDIO_ID);
-  return invoices.find((inv) => inv.id === id || inv.shareToken === id) || null;
+  const connected = await connectMongo();
+  if (connected) {
+    try {
+      const query: any = { $or: [{ id }, { shareToken: id }] };
+      if (studioId) query.studioId = studioId;
+      const doc: any = await InvoiceModel.findOne(query).lean();
+      if (doc) {
+        return { ...doc, id: doc.id || doc._id.toString() } as Invoice;
+      }
+    } catch (e) {
+      console.warn("Mongoose getInvoiceById fallback", e);
+    }
+  }
+
+  const store = readLocalStore();
+  return store.invoices.find((inv) => inv.id === id || inv.shareToken === id) || null;
 }
 
-export async function saveInvoice(invoiceData: Partial<Invoice> & { clientId: string; items: any[] }): Promise<Invoice> {
+export async function saveInvoice(invoiceData: Partial<Invoice> & { clientId: string; items: any[]; studioId?: string }): Promise<Invoice> {
   const studioId = invoiceData.studioId || DEFAULT_STUDIO_ID;
+  const invoiceId = invoiceData.id || `inv_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+
   const store = readLocalStore();
-
+  const existing = store.invoices.find((i) => i.id === invoiceId);
   const client = store.clients.find((c) => c.id === invoiceData.clientId);
-  const clientName = invoiceData.clientName || client?.name || "Client";
-  const clientEmail = invoiceData.clientEmail || client?.email || "";
-  const clientPhone = invoiceData.clientPhone || client?.phone || "";
-  const clientAddress = invoiceData.clientAddress || client?.address || "";
 
-  // Calculate items
-  const items = (invoiceData.items || []).map((it, idx) => ({
+  const clientName = invoiceData.clientName || existing?.clientName || client?.name || "Client";
+  const clientEmail = invoiceData.clientEmail ?? existing?.clientEmail ?? client?.email ?? "";
+  const clientPhone = invoiceData.clientPhone ?? existing?.clientPhone ?? client?.phone ?? "";
+  const clientAddress = invoiceData.clientAddress ?? existing?.clientAddress ?? client?.address ?? "";
+
+  const items = (invoiceData.items || existing?.items || []).map((it, idx) => ({
     id: it.id || `item_${idx + 1}`,
     description: it.description || "Photography Service",
     quantity: Number(it.quantity) || 1,
@@ -490,15 +537,15 @@ export async function saveInvoice(invoiceData: Partial<Invoice> & { clientId: st
   }));
 
   const subtotal = roundToTwoDecimals(items.reduce((acc, it) => acc + it.amount, 0));
-  const discount = roundToTwoDecimals(Number(invoiceData.discount) || 0);
+  const discount = roundToTwoDecimals(Number(invoiceData.discount ?? existing?.discount ?? 0));
   const taxableAmount = Math.max(0, subtotal - discount);
-  const taxRate = Number(invoiceData.taxRate) || 0;
+  const taxRate = Number(invoiceData.taxRate ?? existing?.taxRate ?? 0);
   const taxAmount = roundToTwoDecimals((taxableAmount * taxRate) / 100);
   const totalAmount = roundToTwoDecimals(taxableAmount + taxAmount);
-  const paidAmount = roundToTwoDecimals(Number(invoiceData.paidAmount) || 0);
+  const paidAmount = roundToTwoDecimals(Number(invoiceData.paidAmount ?? existing?.paidAmount ?? 0));
   const balanceDue = roundToTwoDecimals(Math.max(0, totalAmount - paidAmount));
 
-  let status = invoiceData.status || "unpaid";
+  let status = invoiceData.status || existing?.status || "unpaid";
   if (paidAmount >= totalAmount && totalAmount > 0) {
     status = "paid";
   } else if (paidAmount > 0 && paidAmount < totalAmount) {
@@ -507,8 +554,7 @@ export async function saveInvoice(invoiceData: Partial<Invoice> & { clientId: st
     status = "unpaid";
   }
 
-  // Generate unique invoice number if not provided
-  let invoiceNumber = invoiceData.invoiceNumber;
+  let invoiceNumber = invoiceData.invoiceNumber || existing?.invoiceNumber;
   if (!invoiceNumber) {
     const prefix = store.settings.invoicePrefix || "PSB-";
     const nextNum = (store.invoices.length + 1).toString().padStart(3, "0");
@@ -516,145 +562,138 @@ export async function saveInvoice(invoiceData: Partial<Invoice> & { clientId: st
     invoiceNumber = `${prefix}${year}-${nextNum}`;
   }
 
-  const shareToken = invoiceData.shareToken || `tok_${Math.random().toString(36).substring(2, 12)}`;
+  const shareToken = invoiceData.shareToken || existing?.shareToken || `tok_${Math.random().toString(36).substring(2, 12)}`;
 
-  let target: Invoice;
-  if (invoiceData.id) {
-    const idx = store.invoices.findIndex((i) => i.id === invoiceData.id);
-    if (idx !== -1) {
-      target = {
-        ...store.invoices[idx],
-        ...invoiceData,
-        invoiceNumber,
-        clientName,
-        clientEmail,
-        clientPhone,
-        clientAddress,
-        items,
-        subtotal,
-        discount,
-        taxRate,
-        taxAmount,
-        totalAmount,
-        paidAmount,
-        balanceDue,
-        status,
-        shareToken,
-        updatedAt: new Date().toISOString(),
-      };
-      store.invoices[idx] = target;
-    } else {
-      target = {
-        id: invoiceData.id,
-        studioId,
-        invoiceNumber,
-        clientId: invoiceData.clientId,
-        clientName,
-        clientEmail,
-        clientPhone,
-        clientAddress,
-        bookingId: invoiceData.bookingId || "",
-        bookingTitle: invoiceData.bookingTitle || "",
-        issueDate: invoiceData.issueDate || new Date().toISOString().split("T")[0],
-        dueDate: invoiceData.dueDate || new Date(Date.now() + 14 * 86400000).toISOString().split("T")[0],
-        items,
-        subtotal,
-        discount,
-        taxRate,
-        taxAmount,
-        totalAmount,
-        paidAmount,
-        balanceDue,
-        status,
-        paymentMethod: invoiceData.paymentMethod || "bank_transfer",
-        notes: invoiceData.notes || "",
-        terms: invoiceData.terms || store.settings.invoiceTerms || "",
-        shareToken,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
-      store.invoices.unshift(target);
+  const target: Invoice = {
+    id: invoiceId,
+    studioId,
+    invoiceNumber,
+    clientId: invoiceData.clientId,
+    clientName,
+    clientEmail,
+    clientPhone,
+    clientAddress,
+    bookingId: invoiceData.bookingId ?? existing?.bookingId ?? "",
+    bookingTitle: invoiceData.bookingTitle ?? existing?.bookingTitle ?? "",
+    issueDate: invoiceData.issueDate || existing?.issueDate || new Date().toISOString().split("T")[0],
+    dueDate: invoiceData.dueDate || existing?.dueDate || new Date(Date.now() + 14 * 86400000).toISOString().split("T")[0],
+    items,
+    subtotal,
+    discount,
+    taxRate,
+    taxAmount,
+    totalAmount,
+    paidAmount,
+    balanceDue,
+    status,
+    paymentMethod: invoiceData.paymentMethod || existing?.paymentMethod || "bank_transfer",
+    notes: invoiceData.notes ?? existing?.notes ?? "",
+    terms: invoiceData.terms ?? existing?.terms ?? store.settings.invoiceTerms ?? "",
+    shareToken,
+    payments: invoiceData.payments ?? existing?.payments ?? [],
+    createdAt: existing?.createdAt || invoiceData.createdAt || new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  const connected = await connectMongo();
+  if (connected) {
+    try {
+      const [clientRef, bookingRef] = await Promise.all([
+        resolveRef(ClientModel, studioId, target.clientId),
+        resolveRef(BookingModel, studioId, target.bookingId),
+      ]);
+      await InvoiceModel.findOneAndUpdate(
+        { id: target.id, studioId },
+        { $set: { ...target, client: clientRef, booking: bookingRef } },
+        { upsert: true, new: true }
+      );
+    } catch (e) {
+      console.warn("Mongo saveInvoice error", e);
     }
-  } else {
-    target = {
-      id: `inv_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-      studioId,
-      invoiceNumber,
-      clientId: invoiceData.clientId,
-      clientName,
-      clientEmail,
-      clientPhone,
-      clientAddress,
-      bookingId: invoiceData.bookingId || "",
-      bookingTitle: invoiceData.bookingTitle || "",
-      issueDate: invoiceData.issueDate || new Date().toISOString().split("T")[0],
-      dueDate: invoiceData.dueDate || new Date(Date.now() + 14 * 86400000).toISOString().split("T")[0],
-      items,
-      subtotal,
-      discount,
-      taxRate,
-      taxAmount,
-      totalAmount,
-      paidAmount,
-      balanceDue,
-      status,
-      paymentMethod: invoiceData.paymentMethod || "bank_transfer",
-      notes: invoiceData.notes || "",
-      terms: invoiceData.terms || store.settings.invoiceTerms || "",
-      shareToken,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-    store.invoices.unshift(target);
   }
 
-  // Update client totals
-  recalculateClientTotals(target.clientId, store);
-
+  const idx = store.invoices.findIndex((i) => i.id === invoiceId);
+  if (idx !== -1) {
+    store.invoices[idx] = target;
+  } else {
+    store.invoices.unshift(target);
+  }
+  recalculateClientTotals(target.clientId, store, studioId);
   writeLocalStore(store);
+
   return target;
 }
 
-export async function deleteInvoice(id: string): Promise<boolean> {
+export async function deleteInvoice(id: string, studioId: string = DEFAULT_STUDIO_ID): Promise<boolean> {
   const store = readLocalStore();
-  const invoice = store.invoices.find((i) => i.id === id);
+  const inv = store.invoices.find((i) => i.id === id);
+
+  const connected = await connectMongo();
+  if (connected) {
+    try {
+      await InvoiceModel.findOneAndDelete({ id, studioId });
+      await PaymentModel.deleteMany({ invoiceId: id, studioId });
+      await IncomeModel.deleteMany({ invoiceId: id, studioId });
+    } catch {}
+  }
+
   store.invoices = store.invoices.filter((i) => i.id !== id);
-  if (invoice) {
-    recalculateClientTotals(invoice.clientId, store);
+  store.payments = store.payments.filter((p) => p.invoiceId !== id);
+  store.incomes = store.incomes.filter((inc) => inc.invoiceId !== id);
+
+  if (inv) {
+    recalculateClientTotals(inv.clientId, store, studioId);
   }
   writeLocalStore(store);
+
   return true;
 }
 
-/**
- * Records a payment against an invoice:
- * 1. Creates Payment record
- * 2. Updates Invoice paidAmount, balanceDue, and status
- * 3. Records Recognized Income transaction (prevents duplicate income!)
- * 4. Recalculates Client totals
- */
 export async function recordInvoicePayment(params: {
-  studioId?: string;
   invoiceId: string;
   amount: number;
-  paymentDate: string;
-  paymentMethod: any;
+  paymentDate?: string;
+  paymentMethod?: string;
   referenceNumber?: string;
   notes?: string;
-}): Promise<{ payment: Payment; invoice: Invoice; income: Income }> {
+  studioId?: string;
+}): Promise<{ payment: Payment; invoice: Invoice }> {
   const studioId = params.studioId || DEFAULT_STUDIO_ID;
   const store = readLocalStore();
 
-  const invoiceIdx = store.invoices.findIndex((i) => i.id === params.invoiceId);
-  if (invoiceIdx === -1) {
+  let invoice = store.invoices.find((i) => i.id === params.invoiceId);
+  const connected = await connectMongo();
+  if (connected) {
+    const doc = await InvoiceModel.findOne({ id: params.invoiceId, studioId }).lean<any>();
+    if (doc) {
+      invoice = { ...doc, id: doc.id || doc._id.toString() } as unknown as Invoice;
+    }
+  }
+
+  if (!invoice) {
     throw new Error("Invoice not found");
   }
 
-  const invoice = store.invoices[invoiceIdx];
   const paymentAmount = roundToTwoDecimals(Number(params.amount) || 0);
+  const newPaidAmount = roundToTwoDecimals((Number(invoice.paidAmount) || 0) + paymentAmount);
+  const newBalance = roundToTwoDecimals(Math.max(0, invoice.totalAmount - newPaidAmount));
 
-  // 1. Create Payment
-  const newPayment: Payment = {
+  let newStatus = invoice.status;
+  if (newPaidAmount >= invoice.totalAmount && invoice.totalAmount > 0) {
+    newStatus = "paid";
+  } else if (newPaidAmount > 0) {
+    newStatus = "partially_paid";
+  }
+
+  const updatedInvoice: Invoice = {
+    ...invoice,
+    paidAmount: newPaidAmount,
+    balanceDue: newBalance,
+    status: newStatus,
+    updatedAt: new Date().toISOString(),
+  };
+
+  const payment: Payment = {
     id: `pay_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
     studioId,
     invoiceId: invoice.id,
@@ -663,182 +702,233 @@ export async function recordInvoicePayment(params: {
     clientName: invoice.clientName,
     amount: paymentAmount,
     paymentDate: params.paymentDate || new Date().toISOString().split("T")[0],
-    paymentMethod: params.paymentMethod,
+    paymentMethod: (params.paymentMethod as any) || "cash",
     referenceNumber: params.referenceNumber || "",
-    notes: params.notes || "",
+    notes: params.notes || `Payment for Invoice #${invoice.invoiceNumber}`,
     createdAt: new Date().toISOString(),
   };
-  store.payments.unshift(newPayment);
 
-  // 2. Update Invoice
-  const newPaidAmount = roundToTwoDecimals(invoice.paidAmount + paymentAmount);
-  const newBalanceDue = roundToTwoDecimals(Math.max(0, invoice.totalAmount - newPaidAmount));
-  const newStatus = newBalanceDue <= 0 ? "paid" : "partially_paid";
-
-  const updatedInvoice: Invoice = {
-    ...invoice,
-    paidAmount: newPaidAmount,
-    balanceDue: newBalanceDue,
-    status: newStatus,
-    updatedAt: new Date().toISOString(),
-  };
-  store.invoices[invoiceIdx] = updatedInvoice;
-
-  // 3. Record Recognized Income transaction (Cash-basis accounting: income is recorded upon receipt of payment)
-  const newIncome: Income = {
+  const income: Income = {
     id: `inc_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
     studioId,
-    title: `Payment for Invoice ${invoice.invoiceNumber} (${invoice.clientName})`,
+    title: `Payment: ${invoice.clientName} (Inv #${invoice.invoiceNumber})`,
     amount: paymentAmount,
-    category: "wedding_shoot", // default or inferred
-    date: params.paymentDate || new Date().toISOString().split("T")[0],
-    paymentMethod: params.paymentMethod,
+    category: "wedding_shoot",
+    date: payment.paymentDate,
+    paymentMethod: payment.paymentMethod,
     invoiceId: invoice.id,
     bookingId: invoice.bookingId,
     clientId: invoice.clientId,
     clientName: invoice.clientName,
-    reference: params.referenceNumber || "",
-    notes: params.notes || `Received payment for ${invoice.invoiceNumber}`,
+    reference: payment.referenceNumber,
+    notes: payment.notes,
     createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
   };
-  store.incomes.unshift(newIncome);
 
-  // 4. Update Client totals
-  recalculateClientTotals(invoice.clientId, store);
+  if (connected) {
+    try {
+      const [invoiceRef, clientRef] = await Promise.all([
+        resolveRef(InvoiceModel, studioId, invoice.id),
+        resolveRef(ClientModel, studioId, invoice.clientId),
+      ]);
+      const paymentDoc = await PaymentModel.create({
+        ...payment,
+        invoice: invoiceRef,
+        client: clientRef,
+      });
+      await InvoiceModel.findOneAndUpdate(
+        { id: invoice.id, studioId },
+        {
+          $set: updatedInvoice,
+          $push: { payments: paymentDoc._id },
+        }
+      );
+      await IncomeModel.create(income);
+      if (clientRef) {
+        await ClientModel.updateOne(
+          { id: invoice.clientId, studioId },
+          { $push: { paymentHistory: paymentDoc._id } }
+        );
+      }
+    } catch (e) {
+      console.warn("Mongo recordInvoicePayment error", e);
+    }
+  }
 
+  const invIdx = store.invoices.findIndex((i) => i.id === invoice?.id);
+  if (invIdx !== -1) {
+    store.invoices[invIdx] = updatedInvoice;
+  }
+  store.payments.unshift(payment);
+  store.incomes.unshift(income);
+
+  recalculateClientTotals(invoice.clientId, store, studioId);
   writeLocalStore(store);
 
-  return { payment: newPayment, invoice: updatedInvoice, income: newIncome };
+  return { payment, invoice: updatedInvoice };
 }
 
+// ==========================================
+// PAYMENTS & INCOMES CRUD
+// ==========================================
+
 export async function getPayments(studioId: string = DEFAULT_STUDIO_ID): Promise<Payment[]> {
+  const connected = await connectMongo();
+  if (connected) {
+    try {
+      const docs = await PaymentModel.find({ studioId }).sort({ paymentDate: -1 }).lean();
+      return docs.map((d: any) => ({ ...d, id: d.id || d._id.toString() }));
+    } catch {}
+  }
   const store = readLocalStore();
   return store.payments.filter((p) => p.studioId === studioId);
 }
 
-// ==========================================
-// INCOME & EXPENSES CRUD
-// ==========================================
-
 export async function getIncomes(studioId: string = DEFAULT_STUDIO_ID): Promise<Income[]> {
+  const connected = await connectMongo();
+  if (connected) {
+    try {
+      const docs = await IncomeModel.find({ studioId }).sort({ date: -1 }).lean();
+      return docs.map((d: any) => ({ ...d, id: d.id || d._id.toString() }));
+    } catch {}
+  }
   const store = readLocalStore();
   return store.incomes.filter((i) => i.studioId === studioId);
 }
 
-export async function saveIncome(income: Partial<Income> & { title: string; amount: number; date: string }): Promise<Income> {
+export async function saveIncome(income: Partial<Income> & { title: string; amount: number; date: string; studioId?: string }): Promise<Income> {
   const studioId = income.studioId || DEFAULT_STUDIO_ID;
-  const store = readLocalStore();
+  const incomeId = income.id || `inc_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
 
-  let target: Income;
-  if (income.id) {
-    const idx = store.incomes.findIndex((i) => i.id === income.id);
-    if (idx !== -1) {
-      target = { ...store.incomes[idx], ...income, amount: roundToTwoDecimals(Number(income.amount)) };
-      store.incomes[idx] = target;
-    } else {
-      target = {
-        id: income.id,
-        studioId,
-        title: income.title,
-        amount: roundToTwoDecimals(Number(income.amount)),
-        category: income.category || "wedding_shoot",
-        date: income.date,
-        paymentMethod: income.paymentMethod || "cash",
-        reference: income.reference || "",
-        notes: income.notes || "",
-        createdAt: new Date().toISOString(),
-      };
-      store.incomes.unshift(target);
+  const store = readLocalStore();
+  const existing = store.incomes.find((i) => i.id === incomeId);
+
+  const target: Income = {
+    id: incomeId,
+    studioId,
+    title: income.title,
+    amount: roundToTwoDecimals(Number(income.amount) || 0),
+    category: income.category || existing?.category || "wedding_shoot",
+    date: income.date || existing?.date || new Date().toISOString().split("T")[0],
+    paymentMethod: income.paymentMethod || existing?.paymentMethod || "cash",
+    invoiceId: income.invoiceId ?? existing?.invoiceId ?? "",
+    bookingId: income.bookingId ?? existing?.bookingId ?? "",
+    clientId: income.clientId ?? existing?.clientId ?? "",
+    clientName: income.clientName ?? existing?.clientName ?? "",
+    reference: income.reference ?? existing?.reference ?? "",
+    notes: income.notes ?? existing?.notes ?? "",
+    createdAt: existing?.createdAt || income.createdAt || new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  const connected = await connectMongo();
+  if (connected) {
+    try {
+      await IncomeModel.findOneAndUpdate(
+        { id: target.id, studioId },
+        { $set: target },
+        { upsert: true, new: true }
+      );
+    } catch (e) {
+      console.warn("Mongo saveIncome error", e);
     }
-  } else {
-    target = {
-      id: `inc_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-      studioId,
-      title: income.title,
-      amount: roundToTwoDecimals(Number(income.amount)),
-      category: income.category || "wedding_shoot",
-      date: income.date,
-      paymentMethod: income.paymentMethod || "cash",
-      reference: income.reference || "",
-      notes: income.notes || "",
-      createdAt: new Date().toISOString(),
-    };
-    store.incomes.unshift(target);
   }
 
+  const idx = store.incomes.findIndex((i) => i.id === incomeId);
+  if (idx !== -1) {
+    store.incomes[idx] = target;
+  } else {
+    store.incomes.unshift(target);
+  }
   writeLocalStore(store);
+
   return target;
 }
 
-export async function deleteIncome(id: string): Promise<boolean> {
+export async function deleteIncome(id: string, studioId: string = DEFAULT_STUDIO_ID): Promise<boolean> {
+  const connected = await connectMongo();
+  if (connected) {
+    try {
+      await IncomeModel.findOneAndDelete({ id, studioId });
+    } catch {}
+  }
   const store = readLocalStore();
   store.incomes = store.incomes.filter((i) => i.id !== id);
   writeLocalStore(store);
   return true;
 }
 
+// ==========================================
+// EXPENSES CRUD
+// ==========================================
+
 export async function getExpenses(studioId: string = DEFAULT_STUDIO_ID): Promise<Expense[]> {
+  const connected = await connectMongo();
+  if (connected) {
+    try {
+      const docs = await ExpenseModel.find({ studioId }).sort({ date: -1 }).lean();
+      return docs.map((d: any) => ({ ...d, id: d.id || d._id.toString() }));
+    } catch {}
+  }
   const store = readLocalStore();
   return store.expenses.filter((e) => e.studioId === studioId);
 }
 
-export async function saveExpense(expense: Partial<Expense> & { title: string; amount: number; date: string }): Promise<Expense> {
+export async function saveExpense(expense: Partial<Expense> & { title: string; amount: number; date: string; studioId?: string }): Promise<Expense> {
   const studioId = expense.studioId || DEFAULT_STUDIO_ID;
-  const store = readLocalStore();
+  const expenseId = expense.id || `exp_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
 
-  let target: Expense;
-  if (expense.id) {
-    const idx = store.expenses.findIndex((e) => e.id === expense.id);
-    if (idx !== -1) {
-      target = {
-        ...store.expenses[idx],
-        ...expense,
-        amount: roundToTwoDecimals(Number(expense.amount)),
-        updatedAt: new Date().toISOString(),
-      };
-      store.expenses[idx] = target;
-    } else {
-      target = {
-        id: expense.id,
-        studioId,
-        title: expense.title,
-        amount: roundToTwoDecimals(Number(expense.amount)),
-        category: expense.category || "equipment",
-        date: expense.date,
-        paymentMethod: expense.paymentMethod || "cash",
-        vendor: expense.vendor || "",
-        receiptUrl: expense.receiptUrl || "",
-        referenceNumber: expense.referenceNumber || "",
-        notes: expense.notes || "",
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
-      store.expenses.unshift(target);
+  const store = readLocalStore();
+  const existing = store.expenses.find((e) => e.id === expenseId);
+
+  const target: Expense = {
+    id: expenseId,
+    studioId,
+    title: expense.title,
+    amount: roundToTwoDecimals(Number(expense.amount) || 0),
+    category: expense.category || existing?.category || "equipment",
+    date: expense.date || existing?.date || new Date().toISOString().split("T")[0],
+    paymentMethod: expense.paymentMethod || existing?.paymentMethod || "cash",
+    vendor: expense.vendor ?? existing?.vendor ?? "",
+    receiptUrl: expense.receiptUrl ?? existing?.receiptUrl ?? "",
+    referenceNumber: expense.referenceNumber ?? existing?.referenceNumber ?? "",
+    notes: expense.notes ?? existing?.notes ?? "",
+    createdAt: existing?.createdAt || expense.createdAt || new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  const connected = await connectMongo();
+  if (connected) {
+    try {
+      await ExpenseModel.findOneAndUpdate(
+        { id: target.id, studioId },
+        { $set: target },
+        { upsert: true, new: true }
+      );
+    } catch (e) {
+      console.warn("Mongo saveExpense error", e);
     }
-  } else {
-    target = {
-      id: `exp_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-      studioId,
-      title: expense.title,
-      amount: roundToTwoDecimals(Number(expense.amount)),
-      category: expense.category || "equipment",
-      date: expense.date,
-      paymentMethod: expense.paymentMethod || "cash",
-      vendor: expense.vendor || "",
-      receiptUrl: expense.receiptUrl || "",
-      referenceNumber: expense.referenceNumber || "",
-      notes: expense.notes || "",
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-    store.expenses.unshift(target);
   }
 
+  const idx = store.expenses.findIndex((e) => e.id === expenseId);
+  if (idx !== -1) {
+    store.expenses[idx] = target;
+  } else {
+    store.expenses.unshift(target);
+  }
   writeLocalStore(store);
+
   return target;
 }
 
-export async function deleteExpense(id: string): Promise<boolean> {
+export async function deleteExpense(id: string, studioId: string = DEFAULT_STUDIO_ID): Promise<boolean> {
+  const connected = await connectMongo();
+  if (connected) {
+    try {
+      await ExpenseModel.findOneAndDelete({ id, studioId });
+    } catch {}
+  }
   const store = readLocalStore();
   store.expenses = store.expenses.filter((e) => e.id !== id);
   writeLocalStore(store);
@@ -850,82 +940,98 @@ export async function deleteExpense(id: string): Promise<boolean> {
 // ==========================================
 
 export async function getGalleries(studioId: string = DEFAULT_STUDIO_ID): Promise<Gallery[]> {
+  const connected = await connectMongo();
+  if (connected) {
+    try {
+      const docs = await GalleryModel.find({ studioId }).sort({ createdAt: -1 }).lean();
+      return docs.map((d: any) => ({ ...d, id: d.id || d._id.toString() }));
+    } catch {}
+  }
   const store = readLocalStore();
   return store.galleries.filter((g) => g.studioId === studioId);
 }
 
 export async function getGalleryById(id: string): Promise<Gallery | null> {
+  const connected = await connectMongo();
+  if (connected) {
+    try {
+      const doc: any = await GalleryModel.findOne({ $or: [{ id }, { shareUrlToken: id }] }).lean();
+      if (doc) {
+        return { ...doc, id: doc.id || doc._id.toString() } as Gallery;
+      }
+    } catch {}
+  }
   const store = readLocalStore();
   return store.galleries.find((g) => g.id === id || g.shareUrlToken === id) || null;
 }
 
-export async function saveGallery(gallery: Partial<Gallery> & { title: string }): Promise<Gallery> {
+export async function saveGallery(gallery: Partial<Gallery> & { title: string; studioId?: string }): Promise<Gallery> {
   const studioId = gallery.studioId || DEFAULT_STUDIO_ID;
+  const galleryId = gallery.id || `gal_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+
   const store = readLocalStore();
+  const existing = store.galleries.find((g) => g.id === galleryId);
 
-  let target: Gallery;
-  const shareUrlToken = gallery.shareUrlToken || `gal_${Math.random().toString(36).substring(2, 10)}`;
+  const target: Gallery = {
+    id: galleryId,
+    studioId,
+    clientId: gallery.clientId ?? existing?.clientId ?? "",
+    clientName: gallery.clientName ?? existing?.clientName ?? "",
+    employeeId: gallery.employeeId ?? existing?.employeeId ?? "",
+    employeeName: gallery.employeeName ?? existing?.employeeName ?? "",
+    projectId: gallery.projectId ?? existing?.projectId ?? "",
+    projectTitle: gallery.projectTitle ?? existing?.projectTitle ?? "",
+    title: gallery.title,
+    description: gallery.description ?? existing?.description ?? "",
+    coverImage: gallery.coverImage ?? existing?.coverImage ?? "",
+    eventType: gallery.eventType || existing?.eventType || "wedding",
+    shootDate: gallery.shootDate ?? existing?.shootDate ?? "",
+    isPublic: gallery.isPublic ?? existing?.isPublic ?? false,
+    isPasswordProtected: gallery.isPasswordProtected ?? existing?.isPasswordProtected ?? false,
+    accessPassword: gallery.accessPassword ?? existing?.accessPassword ?? "",
+    shareUrlToken: gallery.shareUrlToken || existing?.shareUrlToken || `sh_${Math.random().toString(36).substring(2, 12)}`,
+    downloadEnabled: gallery.downloadEnabled ?? existing?.downloadEnabled ?? true,
+    images: gallery.images || existing?.images || [],
+    createdAt: existing?.createdAt || gallery.createdAt || new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
 
-  if (gallery.id) {
-    const idx = store.galleries.findIndex((g) => g.id === gallery.id);
-    if (idx !== -1) {
-      target = {
-        ...store.galleries[idx],
-        ...gallery,
-        images: gallery.images || store.galleries[idx].images,
-        updatedAt: new Date().toISOString(),
-      };
-      store.galleries[idx] = target;
-    } else {
-      target = {
-        id: gallery.id,
-        studioId,
-        title: gallery.title,
-        clientId: gallery.clientId || "",
-        clientName: gallery.clientName || "",
-        description: gallery.description || "",
-        coverImage: gallery.coverImage || "",
-        eventType: gallery.eventType || "wedding",
-        shootDate: gallery.shootDate || "",
-        isPublic: gallery.isPublic ?? false,
-        isPasswordProtected: gallery.isPasswordProtected ?? false,
-        accessPassword: gallery.accessPassword || "",
-        shareUrlToken,
-        downloadEnabled: gallery.downloadEnabled ?? true,
-        images: gallery.images || [],
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
-      store.galleries.unshift(target);
+  const connected = await connectMongo();
+  if (connected) {
+    try {
+      const [clientRef, projectRef, employeeRef] = await Promise.all([
+        resolveRef(ClientModel, studioId, target.clientId),
+        resolveRef(ProjectModel, studioId, target.projectId),
+        resolveRef(EmployeeModel, studioId, target.employeeId),
+      ]);
+      await GalleryModel.findOneAndUpdate(
+        { id: target.id, studioId },
+        { $set: { ...target, client: clientRef, project: projectRef, employee: employeeRef } },
+        { upsert: true, new: true }
+      );
+    } catch (e) {
+      console.warn("Mongo saveGallery error", e);
     }
-  } else {
-    target = {
-      id: `gal_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-      studioId,
-      title: gallery.title,
-      clientId: gallery.clientId || "",
-      clientName: gallery.clientName || "",
-      description: gallery.description || "",
-      coverImage: gallery.coverImage || "",
-      eventType: gallery.eventType || "wedding",
-      shootDate: gallery.shootDate || "",
-      isPublic: gallery.isPublic ?? false,
-      isPasswordProtected: gallery.isPasswordProtected ?? false,
-      accessPassword: gallery.accessPassword || "",
-      shareUrlToken,
-      downloadEnabled: gallery.downloadEnabled ?? true,
-      images: gallery.images || [],
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-    store.galleries.unshift(target);
   }
 
+  const idx = store.galleries.findIndex((g) => g.id === galleryId);
+  if (idx !== -1) {
+    store.galleries[idx] = target;
+  } else {
+    store.galleries.unshift(target);
+  }
   writeLocalStore(store);
+
   return target;
 }
 
-export async function deleteGallery(id: string): Promise<boolean> {
+export async function deleteGallery(id: string, studioId: string = DEFAULT_STUDIO_ID): Promise<boolean> {
+  const connected = await connectMongo();
+  if (connected) {
+    try {
+      await GalleryModel.findOneAndDelete({ id, studioId });
+    } catch {}
+  }
   const store = readLocalStore();
   store.galleries = store.galleries.filter((g) => g.id !== id);
   writeLocalStore(store);
@@ -937,19 +1043,67 @@ export async function deleteGallery(id: string): Promise<boolean> {
 // ==========================================
 
 export async function getSettings(studioId: string = DEFAULT_STUDIO_ID): Promise<StudioSettings> {
+  const connected = await connectMongo();
+  if (connected) {
+    try {
+      const doc: any = await StudioSettingsModel.findOne({ studioId }).lean();
+      if (doc) {
+        return { ...doc, id: doc.id || doc._id.toString() } as StudioSettings;
+      }
+
+      // If settings don't exist yet for this studioId, initialize them in Mongo
+      const newSettings: StudioSettings = {
+        ...initialSettings,
+        id: `set_${studioId}`,
+        studioId,
+      };
+      await StudioSettingsModel.create(newSettings);
+      return newSettings;
+    } catch (e) {
+      console.warn("Mongoose getSettings fallback", e);
+    }
+  }
+
   const store = readLocalStore();
+  if (store.studioSettingsMap && store.studioSettingsMap[studioId]) {
+    return store.studioSettingsMap[studioId];
+  }
   return store.settings || initialSettings;
 }
 
-export async function saveSettings(settings: Partial<StudioSettings>): Promise<StudioSettings> {
+export async function saveSettings(settings: Partial<StudioSettings>, studioId?: string): Promise<StudioSettings> {
+  const targetStudioId = settings.studioId || studioId || DEFAULT_STUDIO_ID;
   const store = readLocalStore();
+  const current = (store.studioSettingsMap && store.studioSettingsMap[targetStudioId]) || store.settings || initialSettings;
+
   const updated: StudioSettings = {
-    ...store.settings,
+    ...current,
     ...settings,
+    studioId: targetStudioId,
+    id: current.id || `set_${targetStudioId}`,
     updatedAt: new Date().toISOString(),
   };
-  store.settings = updated;
+
+  const connected = await connectMongo();
+  if (connected) {
+    try {
+      await StudioSettingsModel.findOneAndUpdate(
+        { studioId: targetStudioId },
+        { $set: updated },
+        { upsert: true, new: true }
+      );
+    } catch (e) {
+      console.warn("Mongo saveSettings error", e);
+    }
+  }
+
+  if (!store.studioSettingsMap) store.studioSettingsMap = {};
+  store.studioSettingsMap[targetStudioId] = updated;
+  if (targetStudioId === DEFAULT_STUDIO_ID) {
+    store.settings = updated;
+  }
   writeLocalStore(store);
+
   return updated;
 }
 
@@ -957,18 +1111,52 @@ export async function saveSettings(settings: Partial<StudioSettings>): Promise<S
 // RESET & SEED
 // ==========================================
 
-export async function resetAndSeedData(): Promise<LocalStore> {
+export async function resetAndSeedData(studioId: string = DEFAULT_STUDIO_ID): Promise<LocalStore> {
   const freshData: LocalStore = {
-    clients: demoClients,
-    bookings: demoBookings,
-    invoices: demoInvoices,
-    payments: demoPayments,
-    incomes: demoIncomes,
-    expenses: demoExpenses,
-    packages: demoPackages,
-    galleries: demoGalleries,
-    settings: initialSettings,
+    clients: demoClients.map((c) => ({ ...c, studioId })),
+    bookings: demoBookings.map((b) => ({ ...b, studioId })),
+    invoices: demoInvoices.map((i) => ({ ...i, studioId })),
+    payments: demoPayments.map((p) => ({ ...p, studioId })),
+    incomes: demoIncomes.map((inc) => ({ ...inc, studioId })),
+    expenses: demoExpenses.map((e) => ({ ...e, studioId })),
+    packages: demoPackages.map((p) => ({ ...p, studioId })),
+    galleries: demoGalleries.map((g) => ({ ...g, studioId })),
+    settings: { ...initialSettings, studioId },
+    studioSettingsMap: {
+      [studioId]: { ...initialSettings, studioId },
+    },
   };
+
+  const connected = await connectMongo();
+  if (connected) {
+    try {
+      await Promise.all([
+        ClientModel.deleteMany({ studioId }),
+        BookingModel.deleteMany({ studioId }),
+        InvoiceModel.deleteMany({ studioId }),
+        PaymentModel.deleteMany({ studioId }),
+        IncomeModel.deleteMany({ studioId }),
+        ExpenseModel.deleteMany({ studioId }),
+        PackageModel.deleteMany({ studioId }),
+        GalleryModel.deleteMany({ studioId }),
+      ]);
+
+      await Promise.all([
+        ClientModel.insertMany(freshData.clients),
+        BookingModel.insertMany(freshData.bookings),
+        InvoiceModel.insertMany(freshData.invoices),
+        PaymentModel.insertMany(freshData.payments),
+        IncomeModel.insertMany(freshData.incomes),
+        ExpenseModel.insertMany(freshData.expenses),
+        PackageModel.insertMany(freshData.packages),
+        GalleryModel.insertMany(freshData.galleries),
+        StudioSettingsModel.findOneAndUpdate({ studioId }, { $set: freshData.settings }, { upsert: true }),
+      ]);
+    } catch (e) {
+      console.warn("Mongo seed error", e);
+    }
+  }
+
   writeLocalStore(freshData);
   return freshData;
 }
@@ -977,16 +1165,27 @@ export async function resetAndSeedData(): Promise<LocalStore> {
 // HELPER: RECALCULATE CLIENT TOTALS
 // ==========================================
 
-function recalculateClientTotals(clientId: string, store: LocalStore) {
-  const clientIdx = store.clients.findIndex((c) => c.id === clientId);
-  if (clientIdx === -1) return;
-
+async function recalculateClientTotals(clientId: string, store: LocalStore, studioId: string = DEFAULT_STUDIO_ID) {
   const clientInvoices = store.invoices.filter((i) => i.clientId === clientId && i.status !== "cancelled");
-  const totalBilled = clientInvoices.reduce((acc, i) => acc + (Number(i.totalAmount) || 0), 0);
-  const totalPaid = clientInvoices.reduce((acc, i) => acc + (Number(i.paidAmount) || 0), 0);
-  const balance = Math.max(0, totalBilled - totalPaid);
+  const totalBilled = roundToTwoDecimals(clientInvoices.reduce((acc, i) => acc + (Number(i.totalAmount) || 0), 0));
+  const totalPaid = roundToTwoDecimals(clientInvoices.reduce((acc, i) => acc + (Number(i.paidAmount) || 0), 0));
+  const balance = roundToTwoDecimals(Math.max(0, totalBilled - totalPaid));
 
-  store.clients[clientIdx].totalBilled = roundToTwoDecimals(totalBilled);
-  store.clients[clientIdx].totalPaid = roundToTwoDecimals(totalPaid);
-  store.clients[clientIdx].balance = roundToTwoDecimals(balance);
+  const clientIdx = store.clients.findIndex((c) => c.id === clientId);
+  if (clientIdx !== -1) {
+    store.clients[clientIdx].totalBilled = totalBilled;
+    store.clients[clientIdx].totalPaid = totalPaid;
+    store.clients[clientIdx].totalSpending = totalPaid;
+    store.clients[clientIdx].balance = balance;
+  }
+
+  const connected = await connectMongo();
+  if (connected) {
+    try {
+      await ClientModel.findOneAndUpdate(
+        { id: clientId, studioId },
+        { $set: { totalBilled, totalPaid, totalSpending: totalPaid, balance } }
+      );
+    } catch {}
+  }
 }

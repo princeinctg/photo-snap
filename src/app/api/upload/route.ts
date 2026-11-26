@@ -125,13 +125,41 @@ export async function POST(req: Request) {
 
     if (cloudinaryConfigured) {
       const { url, publicId } = await uploadToCloudinary(buffer, detectedMime, folder);
-      return NextResponse.json({ url, publicId, success: true, storage: "cloudinary" });
+      // Generate optimized thumbnail URL via Cloudinary transformations
+      const cloudinary = (await import("cloudinary")).v2;
+      const thumbnailUrl = cloudinary.url(publicId, {
+        transformation: [
+          { width: 400, height: 400, crop: "fill", gravity: "auto" },
+          { quality: "auto", fetch_format: "auto" }
+        ],
+        secure: true,
+      });
+
+      return NextResponse.json({
+        url,
+        publicId,
+        thumbnailUrl,
+        fileName: file.name,
+        size: file.size,
+        format: detectedMime.replace("image/", ""),
+        success: true,
+        storage: "cloudinary"
+      });
     }
 
     // Local fallback
     try {
       const url = await saveLocally(buffer, file.name);
-      return NextResponse.json({ url, success: true, storage: "local" });
+      return NextResponse.json({
+        url,
+        publicId: "",
+        thumbnailUrl: url,
+        fileName: file.name,
+        size: file.size,
+        format: detectedMime.replace("image/", ""),
+        success: true,
+        storage: "local"
+      });
     } catch {
       return NextResponse.json(
         {

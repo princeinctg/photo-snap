@@ -355,6 +355,23 @@
   ],
   "incomes": [
     {
+      "id": "inc_1795675684392_dnl10",
+      "studioId": "std_1795675393019_123ff8",
+      "title": "ujgtguut",
+      "amount": 5000,
+      "category": "wedding_shoot",
+      "date": "2026-11-26",
+      "paymentMethod": "bkash",
+      "invoiceId": "",
+      "bookingId": "",
+      "clientId": "",
+      "clientName": "",
+      "reference": "uyedryrdeyu",
+      "notes": "",
+      "createdAt": "2026-11-26T06:48:04.393Z",
+      "updatedAt": "2026-11-26T06:48:04.393Z"
+    },
+    {
       "id": "inc_001",
       "studioId": "studio_primary_001",
       "title": "Tanvir & Farhana - Booking Deposit",
@@ -420,6 +437,21 @@
     }
   ],
   "expenses": [
+    {
+      "id": "exp_1795675720563_df2gb",
+      "studioId": "std_1795675393019_123ff8",
+      "title": "fghgfdh",
+      "amount": 6000,
+      "category": "equipment",
+      "date": "2026-11-26",
+      "paymentMethod": "card",
+      "vendor": "trurut",
+      "receiptUrl": "",
+      "referenceNumber": "",
+      "notes": "",
+      "createdAt": "2026-11-26T06:48:40.564Z",
+      "updatedAt": "2026-11-26T06:48:40.564Z"
+    },
     {
       "id": "exp_001",
       "studioId": "studio_primary_001",
@@ -736,5 +768,45 @@
     },
     "accountingMethod": "cash",
     "updatedAt": "2026-10-26T15:40:57.263Z"
+  },
+  "studioSettingsMap": {
+    "std_1795675393019_123ff8": {
+      "id": "settings_001",
+      "studioId": "std_1795675393019_123ff8",
+      "studioName": "hdfh",
+      "tagline": "Capturing Your Timeless Moments with Cinematic Elegance",
+      "email": "customer@salonbook.com",
+      "phone": "+880 1711-987654",
+      "address": "House 42, Road 11, Block D, Banani, Dhaka, Bangladesh",
+      "website": "https://photosnapbd.vercel.app",
+      "logoUrl": "https://res.cloudinary.com/vaaejjvb/image/upload/v1795675411/settings/logos/ja2tbc3fl0wldw3gvccm.png",
+      "faviconUrl": "",
+      "signatureUrl": "",
+      "currency": "BDT",
+      "currencySymbol": "৳",
+      "taxRate": 5,
+      "invoicePrefix": "PSB-",
+      "invoiceFooterNote": "Thank you for trusting PhotoSnap Studio. Raw photo selection links are delivered within 48 hours.",
+      "invoiceTerms": "1. 40% non-refundable advance to confirm booking date.\n2. 40% due on the shoot event day.\n3. Final 20% due upon preview approval before album printing.",
+      "theme": {
+        "mode": "light",
+        "primaryColor": "emerald",
+        "accentColor": "amber",
+        "borderRadius": "md",
+        "font": "sans"
+      },
+      "dashboardWidgets": {
+        "revenueChart": true,
+        "expensePie": true,
+        "recentTransactions": true,
+        "upcomingShoots": true,
+        "cashFlowChart": true
+      },
+      "accountingMethod": "cash",
+      "updatedAt": "2026-11-26T06:43:51.469Z",
+      "_id": "6b07d501536669027ff40625",
+      "createdAt": "2026-11-26T06:43:13.024Z",
+      "__v": 0
+    }
   }
 }

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getSettings, saveSettings } from "@/lib/db";
-import { DEFAULT_STUDIO_ID } from "@/lib/demo-data";
+import { getAuthStudioId } from "@/lib/auth";
 import fs from "fs";
 import path from "path";
 
@@ -9,8 +9,7 @@ const STORE_FILE = path.join(DATA_DIR, "studio-store.json");
 
 export async function GET(req: Request) {
   try {
-    const { searchParams } = new URL(req.url);
-    const studioId = searchParams.get("studioId") || DEFAULT_STUDIO_ID;
+    const studioId = getAuthStudioId(req);
     const settings = await getSettings(studioId);
     return NextResponse.json({ settings });
   } catch (error: any) {
@@ -20,8 +19,9 @@ export async function GET(req: Request) {
 
 export async function PUT(req: Request) {
   try {
+    const studioId = getAuthStudioId(req);
     const body = await req.json();
-    const updated = await saveSettings(body);
+    const updated = await saveSettings({ ...body, studioId }, studioId);
     return NextResponse.json({ settings: updated, success: true });
   } catch (error: any) {
     return NextResponse.json({ error: error.message || "Failed to save settings" }, { status: 500 });
@@ -30,6 +30,7 @@ export async function PUT(req: Request) {
 
 export async function POST(req: Request) {
   try {
+    const studioId = getAuthStudioId(req);
     const { action, backupData } = await req.json();
 
     if (action === "export") {
@@ -41,6 +42,9 @@ export async function POST(req: Request) {
     }
 
     if (action === "import" && backupData) {
+      if (!fs.existsSync(DATA_DIR)) {
+        fs.mkdirSync(DATA_DIR, { recursive: true });
+      }
       fs.writeFileSync(STORE_FILE, JSON.stringify(backupData, null, 2), "utf-8");
       return NextResponse.json({ success: true, message: "Backup successfully restored" });
     }

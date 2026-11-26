@@ -133,6 +133,9 @@ export default function ExpensesPage() {
         if (res.ok) {
           fetchExpenses();
           setModalOpen(false);
+        } else {
+          const err = await res.json().catch(() => ({}));
+          alert(err.error || "Failed to update expense.");
         }
       } else {
         const res = await fetch("/api/finances/expenses", {
@@ -143,6 +146,9 @@ export default function ExpensesPage() {
         if (res.ok) {
           fetchExpenses();
           setModalOpen(false);
+        } else {
+          const err = await res.json().catch(() => ({}));
+          alert(err.error || "Failed to record expense.");
         }
       }
     } catch (err) {

@@ -1,27 +1,47 @@
 import { NextResponse } from "next/server";
-import { setSessionCookie } from "@/lib/auth";
+import { registerUser } from "@/lib/auth";
+import { handleError, parseBody } from "@/lib/api";
+import { registerSchema } from "@/lib/validation";
+import { checkRateLimit, rateLimitHeaders, rateLimitKey } from "@/lib/rate-limit";
 
 export async function POST(req: Request) {
   try {
-    const { name, email, password, studioName } = await req.json();
+    const body = await parseBody(req, registerSchema);
+    const limit = checkRateLimit(rateLimitKey(req, "register"), 8, 60 * 60 * 1000);
 
-    if (!name || !email || !password) {
-      return NextResponse.json({ error: "Name, email, and password are required" }, { status: 400 });
+    if (!limit.allowed) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Too many registration attempts. Please try again later.",
+          code: "RATE_LIMITED",
+        },
+        { status: 429, headers: rateLimitHeaders(limit) }
+      );
     }
 
-    const newStudioId = `studio_${Date.now()}`;
-    const user = {
-      userId: `user_${Date.now()}`,
-      email,
-      name,
-      role: "owner",
-      studioId: newStudioId,
-    };
+    const result = await registerUser({
+      name: body.name,
+      email: body.email,
+      password: body.password,
+      phone: body.phone,
+      studioName: body.studioName,
+      req,
+    });
 
-    setSessionCookie(user);
-
-    return NextResponse.json({ user, success: true });
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message || "Registration failed" }, { status: 500 });
+    return NextResponse.json(
+      {
+        user: result.user,
+        success: true,
+        requiresVerification: result.requiresVerification || false,
+        verificationToken: result.verificationToken,
+        message: result.requiresVerification
+          ? "Studio created. Check your email to verify your account before signing in."
+          : "Studio workspace created successfully.",
+      },
+      { status: 201, headers: rateLimitHeaders(limit) }
+    );
+  } catch (error) {
+    return handleError(error);
   }
 }

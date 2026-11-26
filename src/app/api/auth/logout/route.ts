@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
-import { removeSessionCookie } from "@/lib/auth";
+import { logoutUser } from "@/lib/auth";
 
-export async function POST() {
-  removeSessionCookie();
+export async function POST(req: Request) {
+  await logoutUser(req);
   return NextResponse.json({ success: true, message: "Logged out successfully" });
 }

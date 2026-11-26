@@ -1,40 +1,109 @@
 import { NextResponse } from "next/server";
-import { getClients, saveClient, deleteClient, getBookings, getInvoices, getPayments } from "@/lib/db";
-import { DEFAULT_STUDIO_ID } from "@/lib/demo-data";
+import mongoose from "mongoose";
+import { ApiError, audit, handleError, parseBody, requireAuth, requireStaff } from "@/lib/api";
+import { can } from "@/lib/permissions";
+import { ClientModel, UserModel } from "@/lib/models";
+import { getBookings, getInvoices, getPayments } from "@/lib/db";
+import { clientUpdateSchema } from "@/lib/validation";
+
+async function findClient(id: string, studioId: string) {
+  const client = await ClientModel.findOne({ id, studioId }).lean();
+  if (!client) throw new ApiError(404, "Client not found", "NOT_FOUND");
+  return client as any;
+}
 
 export async function GET(req: Request, { params }: { params: { id: string } }) {
   try {
-    const clients = await getClients(DEFAULT_STUDIO_ID);
-    const client = clients.find((c) => c.id === params.id);
-    if (!client) {
-      return NextResponse.json({ error: "Client not found" }, { status: 404 });
+    const auth = await requireAuth(req);
+    if (auth.role !== "client" && !can(auth.role, "clients:read")) {
+      throw new ApiError(403, "You do not have permission to view clients.", "FORBIDDEN");
     }
 
-    const bookings = (await getBookings(DEFAULT_STUDIO_ID)).filter((b) => b.clientId === client.id);
-    const invoices = (await getInvoices(DEFAULT_STUDIO_ID)).filter((i) => i.clientId === client.id);
-    const payments = (await getPayments(DEFAULT_STUDIO_ID)).filter((p) => p.clientId === client.id);
+    const client = await findClient(params.id, auth.studioId);
+    if (auth.role === "client" && client.userId !== auth.userId) {
+      throw new ApiError(403, "You can only access your own records.", "FORBIDDEN");
+    }
 
-    return NextResponse.json({ client, bookings, invoices, payments });
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message || "Failed to load client" }, { status: 500 });
+    const [bookings, invoices, payments] = await Promise.all([
+      getBookings(auth.studioId),
+      getInvoices(auth.studioId),
+      getPayments(auth.studioId),
+    ]);
+
+    return NextResponse.json({
+      success: true,
+      client: { ...client, id: client.id || String(client._id) },
+      bookings: bookings.filter((b) => b.clientId === client.id),
+      invoices: invoices.filter((i) => i.clientId === client.id),
+      payments: payments.filter((p) => p.clientId === client.id),
+    });
+  } catch (error) {
+    return handleError(error);
   }
 }
 
 export async function PUT(req: Request, { params }: { params: { id: string } }) {
   try {
-    const body = await req.json();
-    const updated = await saveClient({ ...body, id: params.id });
-    return NextResponse.json({ client: updated, success: true });
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message || "Failed to update client" }, { status: 500 });
+    const auth = await requireStaff(req, "clients:write");
+    const body = await parseBody(req, clientUpdateSchema);
+    const existing = await findClient(params.id, auth.studioId);
+
+    const update: Record<string, unknown> = { ...body };
+    if (body.userId !== undefined) {
+      const user = body.userId
+        ? await UserModel.findOne({ id: body.userId, studioId: auth.studioId }).select("_id").lean<any>()
+        : null;
+      update.user = (user?._id as mongoose.Types.ObjectId) || null;
+    }
+
+    const updated = await ClientModel.findOneAndUpdate(
+      { id: params.id, studioId: auth.studioId },
+      { $set: update },
+      { new: true }
+    ).lean();
+
+    await audit({
+      req,
+      auth,
+      studioId: auth.studioId,
+      action: "client.update",
+      entityType: "Client",
+      entityId: params.id,
+      details: { fields: Object.keys(body) },
+    });
+
+    return NextResponse.json({
+      success: true,
+      client: { ...(updated as any), id: existing.id },
+    });
+  } catch (error) {
+    return handleError(error);
   }
 }
 
 export async function DELETE(req: Request, { params }: { params: { id: string } }) {
   try {
-    const success = await deleteClient(params.id);
-    return NextResponse.json({ success });
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message || "Failed to delete client" }, { status: 500 });
+    const auth = await requireStaff(req, "clients:write");
+    const existing = await findClient(params.id, auth.studioId);
+
+    // Soft delete keeps bookings, invoices and payment history intact.
+    await ClientModel.updateOne(
+      { id: params.id, studioId: auth.studioId },
+      { $set: { isArchived: true, status: "inactive" } }
+    );
+
+    await audit({
+      req,
+      auth,
+      studioId: auth.studioId,
+      action: "client.archive",
+      entityType: "Client",
+      entityId: params.id,
+      details: { name: existing.name },
+    });
+
+    return NextResponse.json({ success: true, message: "Client archived." });
+  } catch (error) {
+    return handleError(error);
   }
 }

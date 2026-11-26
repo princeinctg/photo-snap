@@ -1,13 +1,13 @@
 import { NextResponse } from "next/server";
 import { getIncomes, getExpenses, getInvoices, getBookings, getClients } from "@/lib/db";
-import { DEFAULT_STUDIO_ID } from "@/lib/demo-data";
+import { getAuthStudioId } from "@/lib/auth";
 import { calculateStudioFinancials, generateMonthlyFinancialTrends } from "@/lib/finance-utils";
 import { roundToTwoDecimals } from "@/lib/utils";
 
 export async function GET(req: Request) {
   try {
+    const studioId = getAuthStudioId(req);
     const { searchParams } = new URL(req.url);
-    const studioId = searchParams.get("studioId") || DEFAULT_STUDIO_ID;
     const dateRange = searchParams.get("range") || "this_year"; // today, this_week, this_month, this_year, all, custom
     const customStart = searchParams.get("startDate");
     const customEnd = searchParams.get("endDate");

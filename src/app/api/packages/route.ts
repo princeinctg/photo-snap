@@ -1,11 +1,10 @@
 import { NextResponse } from "next/server";
 import { getPackages, savePackage } from "@/lib/db";
-import { DEFAULT_STUDIO_ID } from "@/lib/demo-data";
+import { getAuthStudioId } from "@/lib/auth";
 
 export async function GET(req: Request) {
   try {
-    const { searchParams } = new URL(req.url);
-    const studioId = searchParams.get("studioId") || DEFAULT_STUDIO_ID;
+    const studioId = getAuthStudioId(req);
     const packages = await getPackages(studioId);
     return NextResponse.json({ packages });
   } catch (error: any) {
@@ -15,14 +14,15 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   try {
+    const studioId = getAuthStudioId(req);
     const body = await req.json();
     if (!body.name || body.price === undefined) {
       return NextResponse.json({ error: "Package name and price are required" }, { status: 400 });
     }
 
-    const saved = await savePackage(body);
+    const saved = await savePackage({ ...body, studioId });
     return NextResponse.json({ package: saved, success: true }, { status: 201 });
   } catch (error: any) {
-    return NextResponse.json({ error: error.message || "Failed to save package" }, { status: 500 });
+    return NextResponse.json({ error: error.message || "Failed to create package" }, { status: 500 });
   }
 }

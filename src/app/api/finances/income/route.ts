@@ -1,11 +1,11 @@
 import { NextResponse } from "next/server";
 import { getIncomes, saveIncome } from "@/lib/db";
-import { DEFAULT_STUDIO_ID } from "@/lib/demo-data";
+import { getAuthStudioId } from "@/lib/auth";
 
 export async function GET(req: Request) {
   try {
+    const studioId = getAuthStudioId(req);
     const { searchParams } = new URL(req.url);
-    const studioId = searchParams.get("studioId") || DEFAULT_STUDIO_ID;
     const category = searchParams.get("category");
     const startDate = searchParams.get("startDate");
     const endDate = searchParams.get("endDate");
@@ -30,6 +30,7 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   try {
+    const studioId = getAuthStudioId(req);
     const body = await req.json();
     if (!body.title || !body.amount || !body.date) {
       return NextResponse.json(
@@ -38,7 +39,7 @@ export async function POST(req: Request) {
       );
     }
 
-    const saved = await saveIncome(body);
+    const saved = await saveIncome({ ...body, studioId });
     return NextResponse.json({ income: saved, success: true }, { status: 201 });
   } catch (error: any) {
     return NextResponse.json({ error: error.message || "Failed to save income" }, { status: 500 });

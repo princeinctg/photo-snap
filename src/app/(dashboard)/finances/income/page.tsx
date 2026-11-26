@@ -123,6 +123,9 @@ export default function IncomePage() {
         if (res.ok) {
           fetchIncome();
           setModalOpen(false);
+        } else {
+          const err = await res.json().catch(() => ({}));
+          alert(err.error || "Failed to update income.");
         }
       } else {
         const res = await fetch("/api/finances/income", {
@@ -133,6 +136,9 @@ export default function IncomePage() {
         if (res.ok) {
           fetchIncome();
           setModalOpen(false);
+        } else {
+          const err = await res.json().catch(() => ({}));
+          alert(err.error || "Failed to record income.");
         }
       }
     } catch (err) {
